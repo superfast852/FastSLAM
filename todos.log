@@ -1,0 +1,3 @@
+Add initial guesses for ICP. And properly implement Point-to-Line ICP.
+Add some way to know how sh*t a map is. Maybe find "fragmentation" in walls? discontinuities?
+Test with noise

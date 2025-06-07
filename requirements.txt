@@ -1,0 +1,9 @@
+numpy
+opencv-python
+numba
+# i think pillow comes w python?
+scikit-image
+pycuda
+scipy
+matplotlib
+scikit-learn
