@@ -2,7 +2,7 @@ from time import time
 import cv2
 import numpy as np
 from mapping import Map, batch_update
-from icp import icp
+from icp import icp, icp_gpu, plt
 from tools import normalize_angle, to_world
 
 np.set_printoptions(suppress=True, precision=6)
@@ -124,7 +124,6 @@ class SLAM:
         :param scan: The 2D lidar scan in cartesian coordinates, as an Nx2-shaped array (in METERS, robot frame)
         :return: The estimated best particle index (reference with the particle array)
         """
-        # scan[:, 1] *= -1  # im sorry, WHAT.
         # 1: Predict particle motion (motion model)
         # TODO: reinforce the odometry with ICP
         # if self.prev_scan is not None:
@@ -134,8 +133,9 @@ class SLAM:
 
         # 2: Update each particle with the scan
         if self.prev_scan is not None:  # to ensure initialization :)
-            for particle_idx in range(self.n_particles):
-                self.update_particle(particle_idx, scan)
+            # for particle_idx in range(self.n_particles):
+            #     self.update_particle(particle_idx, scan)
+            self.batch_update_particles(scan)
         self.particles.poses[:, 2] = normalize_angle(self.particles.poses[:, 2])
         self.prev_scan = scan.copy()
         self.update_maps(scan)
@@ -200,8 +200,8 @@ class SLAM:
                 # Use predicted pose as initial guess for ICP
                 initial_guess = pose  # ICP will find the correction
                 global_scan = to_world(initial_guess, scan)
-                pose_correction, icp_error, _ = icp(global_scan, map_points)
 
+                pose_correction, icp_error, _ = icp(global_scan, map_points)
                 # Update particle pose
                 pose_correction[2] = normalize_angle(pose_correction[2])
                 self.particles.poses[particle_idx] += pose_correction
@@ -216,6 +216,15 @@ class SLAM:
                 self.particles.weights[particle_idx] = 0.00
         else:
             self.particles.weights[particle_idx] = 1/self.n_particles  # No penalty if there's no map yet
+        return self.particles.weights[particle_idx]
+
+    def batch_update_particles(self, scan):
+        maps = [self.particles.maps[i].toScan(skel=self.thick, pose=self.particles.poses[i],
+                                              max_radius=self.mld)-self.px2m(*self.particles.maps[i].map_center) for i, map in enumerate(self.particles.maps)]
+        new_poses, errors = icp_gpu(scan, maps, self.particles.poses)
+        self.particles.poses = new_poses.copy()
+        self.particles.errors = errors.copy()
+        self.particles.weights = 1.0/(1.0 + errors)
 
     def update_maps(self, scan):
         """
@@ -249,6 +258,37 @@ class SLAM:
         for new_idx, old_idx in enumerate(indices):
             new_particles.poses[new_idx] = self.particles.poses[old_idx].copy()
             new_particles.maps[new_idx] = self.particles.maps[old_idx].copy()
+            new_particles.weights[new_idx] = 1.0 / self.n_particles
+
+        self.particles = new_particles
+
+    def elitist_resample_particles(self, elite_fraction=0.1):
+        print("Resampling...")
+
+        elite_count = int(self.n_particles * elite_fraction)
+        elite_indices = np.argsort(self.particles.weights)[-elite_count:]
+
+        new_particles = ParticleSystem(self.n_particles, self.map_px, self.map_m)
+
+        # Copy elite particles directly
+        for i, elite_idx in enumerate(elite_indices):
+            new_particles.copy_particle(elite_idx, i)
+            new_particles.weights[i] = 1.0 / self.n_particles
+
+        # Systematic resampling for the rest
+        remaining_count = self.n_particles - elite_count
+        cum_weights = np.cumsum(self.particles.weights)
+        step = 1.0 / remaining_count
+        r = np.random.uniform(0, step)
+
+        indices = np.zeros(remaining_count, dtype=int)
+        for i in range(remaining_count):
+            u = r + i * step
+            indices[i] = np.searchsorted(cum_weights, u)
+
+        for i, old_idx in enumerate(indices):
+            new_idx = i + elite_count
+            new_particles.copy_particle(old_idx, new_idx)
             new_particles.weights[new_idx] = 1.0 / self.n_particles
 
         self.particles = new_particles

@@ -53,15 +53,15 @@ Vector4d update_transform(const MatrixXd& pt,
             // Jacobian of residual
             RowVector3d J_r = n.transpose() * J_Tp;
             if (i==0){
-                // std::cout << t << " " << r << " " << n.transpose() << std::endl;
-                // std::cout << q1.transpose() << " " << q2.transpose() << " " << line.transpose() << " " << n.transpose() << " " << line.squaredNorm() << std::endl;
+                std::cout << J_Tp(0, 2) << " " << J_Tp(1, 2) << " " << J_r(2) << std::endl;
             }
 
             // Accumulate normal equations
             H += J_r.transpose() * J_r;
             b += -J_r.transpose() * r;
-        }
 
+
+        }
         // Solve for update
         Vector3d dx = H.inverse()*b; // H.ldlt().solve(b);
         x += dx;

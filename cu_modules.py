@@ -125,6 +125,155 @@ __global__ void update_map(float2 *scan, unsigned char *maps, float3 *poses, int
 
 """)
 
+tf_module = SourceModule(r"""
+__device__ double2 transform_2d(double2 point, double3 pose, double &c, double &s) {
+    return make_double2(point.x * c - point.y * s + pose.x,
+                       point.x * s + point.y * c + pose.y);
+}
+
+__device__ double3 solve_system(const double H[9], const double3 b)
+{
+    // H = [ H[0] H[1] H[2] ]
+    //     [ H[3] H[4] H[5] ]
+    //     [ H[6] H[7] H[8] ]
+    // (symmetric: H[1]==H[3], H[2]==H[6], H[5]==H[7])
+
+    // LDLᵀ decomposition
+    double L[9] = {0};
+    double D[3] = {0};
+
+    // Step 1: LDLᵀ
+    L[0] = 1.0;
+    D[0] = H[0];
+
+    L[3] = H[3] / D[0];  // = H[1]/D[0]
+    L[4] = 1.0;
+    D[1] = H[4] - L[3]*L[3]*D[0];
+
+    L[6] = H[6] / D[0];  // = H[2]/D[0]
+    L[7] = (H[7] - L[6]*L[3]*D[0]) / D[1];  // = (H[5] - L[6]*L[3]*D[0]) / D[1]
+    L[8] = 1.0;
+    D[2] = H[8] - L[6]*L[6]*D[0] - L[7]*L[7]*D[1];
+
+    // Step 2: solve L * y = b
+    double y0 = b.x;
+    double y1 = b.y - L[3]*y0;
+    double y2 = b.z - L[6]*y0 - L[7]*y1;
+
+    // Step 3: solve D * z = y
+    double z0 = y0 / D[0];
+    double z1 = y1 / D[1];
+    double z2 = y2 / D[2];
+
+    // Step 4: solve Lᵗ * x = z
+    double x2 = z2;
+    double x1 = z1 - L[7]*x2;
+    double x0 = z0 - L[3]*x1 - L[6]*x2;
+
+    return make_double3(x0, x1, x2);
+}
+
+__global__ void update_transform(double2* pts, double2* q1s, double2* q2s, double3* poses, double4* out)
+{
+    // The program is split as:
+    // n_particles amount of blocks, and n_points amount of threads
+    __shared__ double3 x;
+    __shared__ double H[9];
+    __shared__ double3 b;
+    __shared__ double total_err, cos_theta, sin_theta;  // remember to reset to zero after iterating once!
+    if (threadIdx.x == 0)
+    {
+        x = poses[blockIdx.x];
+        for (auto &n: H) n = 0.0;
+        b = make_double3(0, 0, 0);
+        total_err = 0;
+        cos_theta = cos(x.z);
+        sin_theta = sin(x.z);
+    }
+    __syncthreads();
+
+    unsigned int n_points = blockDim.x;
+    unsigned int current_corr_id = n_points*blockIdx.x + threadIdx.x;
+
+    double2 pt = pts[threadIdx.x];  // Only one scan for all blocks, so we access it by thread
+    double2 q1 = q1s[current_corr_id];
+    double2 q2 = q2s[current_corr_id];
+
+    double2 line = make_double2(q2.x - q1.x, q2.y - q1.y);
+    double ll_sq = line.x * line.x + line.y * line.y;
+    double2 n = make_double2(-line.y, line.x);
+    double n_norm =  sqrt(ll_sq);
+    n.x /= n_norm;
+    n.y /= n_norm;
+
+    for (int iter = 0; iter < 10; iter++)
+    {
+        double2 p = transform_2d(pt, x, cos_theta, sin_theta);
+        double t = ((p.x - q1.x)*line.x + (p.y - q1.y)*line.y) / ll_sq;
+        double2 proj = make_double2(q1.x + t*line.x, q1.y + t*line.y);
+        double r = (p.x - proj.x)*n.x + (p.y - proj.y)*n.y;
+        atomicAdd(&total_err, r*r);
+
+        double nx = n.x, ny = n.y;
+        double mu = (-sin_theta*pt.x - cos_theta*pt.y)*nx + (cos_theta*pt.x - sin_theta*pt.y)*ny;
+        atomicAdd(&H[0], nx*nx);
+        atomicAdd(&H[1], nx*ny);
+        atomicAdd(&H[2], nx*mu);
+
+        atomicAdd(&H[3], ny*nx);
+        atomicAdd(&H[4], ny*ny);
+        atomicAdd(&H[5], ny*mu);
+
+        atomicAdd(&H[6], mu*nx);
+        atomicAdd(&H[7], mu*ny);
+        atomicAdd(&H[8], mu*mu);
+
+        atomicAdd(&b.x, -nx*r);
+        atomicAdd(&b.y, -ny*r);
+        atomicAdd(&b.z, -mu*r);
+
+        __syncthreads();
+
+        if (threadIdx.x == 0)
+        {
+            double3 dx = solve_system(H, b);
+            // double dxarr[3];
+            // solve3x3(H, b, dxarr);
+            // double3 dx = make_double3(dxarr[0], dxarr[1], dxarr[2]);
+            atomicAdd(&x.x, dx.x);
+            atomicAdd(&x.y, dx.y);
+            atomicAdd(&x.z, dx.z);
+            out[blockIdx.x].w = total_err;
+
+            for (double & i : H) i = 0.0;
+            b = make_double3(0.0, 0.0, 0.0);
+            double norm = dx.x*dx.x + dx.y*dx.y + dx.z*dx.z;
+            if (sqrt(norm) < 1e-6)
+            {
+                total_err = -1.0;
+            }else
+            {
+                total_err = 0;
+                sincos(x.z, &sin_theta, &cos_theta);
+            }
+
+        }
+        __syncthreads();
+        if (total_err == -1.0)
+        {
+            break;
+        }
+    }
+
+    if (threadIdx.x == 0)
+    {
+        out[blockIdx.x].x = x.x;
+        out[blockIdx.x].y = x.y;
+        out[blockIdx.x].z = x.z;
+    }
+}
+""")
+
 def save_pgm(map: np.ndarray, filename: str):
     with open(filename, "wb") as f:
         f.write(b"P2\n")
@@ -177,6 +326,58 @@ def update_map(scan: np.ndarray, maps: np.ndarray, poses: np.ndarray, thick=Fals
     cuda.Context.synchronize()
     cuda.memcpy_dtoh(maps, d_maps)
     return maps/255.0
+
+
+def icp_update_transform(pts: np.ndarray, q1s: np.ndarray, q2s: np.ndarray, poses: np.ndarray):
+    """
+    Runs the point-to-line ICP kernel on GPU for multiple particles.
+
+    :param pts: (N, 2) array of scan points shared across all particles.
+    :param q1s: (P*N, 2) array of start points of line segments (correspondences).
+    :param q2s: (P*N, 2) array of end points of line segments (correspondences).
+    :param poses: (P, 3) array of [x, y, theta] poses for each particle.
+    :param module: Compiled CUDA SourceModule with 'update_transform' kernel.
+    :return: Updated poses as (P, 3) array, and ICP residual errors (P,) array.
+    """
+    pts = pts.astype(np.double)
+    q1s = q1s.astype(np.double)
+    q2s = q2s.astype(np.double)
+    poses = poses.astype(np.double)
+
+    n_points = pts.shape[0]
+    n_particles = poses.shape[0]
+
+    assert q1s.shape == (n_particles * n_points, 2)
+    assert q2s.shape == (n_particles * n_points, 2)
+
+    # Allocate and upload inputs
+    d_pts = cuda.mem_alloc(pts.nbytes)
+    d_q1s = cuda.mem_alloc(q1s.nbytes)
+    d_q2s = cuda.mem_alloc(q2s.nbytes)
+    d_poses = cuda.mem_alloc(poses.nbytes)
+    d_out = cuda.mem_alloc(n_particles * 4 * np.double().nbytes)  # 3 for pose + 1 for error
+
+    cuda.memcpy_htod(d_pts, pts)
+    cuda.memcpy_htod(d_q1s, q1s)
+    cuda.memcpy_htod(d_q2s, q2s)
+    cuda.memcpy_htod(d_poses, poses)
+
+    # Call kernel
+    func = tf_module.get_function("update_transform")
+    func(
+        d_pts, d_q1s, d_q2s, d_poses, d_out,
+        block=(n_points, 1, 1), grid=(n_particles, 1)
+    )
+
+    # Retrieve updated poses and errors
+    out = np.empty((n_particles, 4), dtype=np.double)
+    cuda.Context.synchronize()
+    cuda.memcpy_dtoh(out, d_out)
+
+    updated_poses = out[:, :3]
+    icp_errors = out[:, 3]
+
+    return updated_poses, icp_errors
 
 
 update_map(np.zeros((3,2)), np.zeros((2, 2)), np.zeros((3,)))

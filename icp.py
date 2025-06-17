@@ -1,5 +1,6 @@
 from fast_update_transform import update_transform
 import numpy as np
+from cu_modules import icp_update_transform
 from matplotlib import pyplot as plt
 from scipy.spatial import KDTree
 
@@ -64,7 +65,8 @@ def icp(og_src, tgt, show=False, max_iter=100, eps=1e-4):
             ax.scatter(*src.T, s=2)
             plt.draw()
             plt.pause(0.5)
-
+            # np.save("icp.npy", correspondences[1:])
+        # print(np.hstack(correspondences[1:])[0])
         out = update_transform(*correspondences, max_iter=10)
         pose = out[:3]
         err = out[3]
@@ -74,6 +76,28 @@ def icp(og_src, tgt, show=False, max_iter=100, eps=1e-4):
     if show:
         plt.close(fig)
     return cumulative_pose, err, src
+
+def icp_gpu(og_src: np.ndarray, maps: list[np.ndarray], poses: np.ndarray, max_iter=10, eps=1e-4, show=False):
+    # icp_update_transform(og_src, q1s_all, q2s_all, poses)
+    poses = poses.copy().astype(np.float32)  # ensure memory safety!
+    n_particles = poses.shape[0]
+    n_points = og_src.shape[0]
+    segments_and_trees = [vec_neighbors(tgt) for tgt in maps]
+    prev_err = np.full(n_particles, np.inf, dtype=np.float32)
+
+    for iter_num in range(max_iter):
+        q1s = np.zeros((n_particles * n_points, 2), dtype=np.float32)
+        q2s = np.zeros((n_particles * n_points, 2), dtype=np.float32)
+        for i, pose in enumerate(poses):
+            tf_scan = transform_points(og_src, *pose)
+            p, q1, q2 = getNaiveCorrespondence(tf_scan, *segments_and_trees[i])
+            q1s[i * n_points:(i + 1) * n_points] = q1
+            q2s[i * n_points:(i + 1) * n_points] = q2
+        poses, err = icp_update_transform(og_src.copy(), q1s, q2s, poses)
+        if np.all(np.abs(err - prev_err) < eps):
+            break
+        prev_err = err.copy()
+    return poses, err
 
 if __name__ == "__main__":
     from mapping import Map
@@ -102,12 +126,20 @@ if __name__ == "__main__":
     plt.scatter(*src.T, s=2)
     plt.show()
     icp(src.copy(), tgt, show=False)
+    # iterative_closest_point(src.copy(), tgt, return_score=True)
 
     start = perf_counter()
     pose1, err1, tf1_pts = icp(src.copy(), tgt)
     print(f"plicp time: {1/(perf_counter()-start)}")
     print(pose1, err1)
+    start = perf_counter()
+    pose2, err2 = icp_gpu(src.copy(), [tgt], np.array([[0, 0, 0]]))
+    pose2 = pose2[0]
+    err2 = err2[0]
+    print(f"ogicp time: {1/(perf_counter()-start)}")
+    print(pose1, err1)
 
     plt.scatter(*tgt.T, c='b', s=2)
     plt.scatter(*transform_points(src.copy(), *pose1).T, c='r', s=2)
+    plt.scatter(*transform_points(src.copy(), *pose2).T, c='g', s=2)
     plt.show()

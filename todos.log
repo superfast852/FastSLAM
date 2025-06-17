@@ -3,10 +3,13 @@ Add some way to know how sh*t a map is. Maybe find "fragmentation" in walls? dis
 Test with noise
 
 THE CUDA ISSUE IS WITH THE SYSTEM SOLUTION.
-soooo actually ::::
-the problem seems to be rooted much higher. We're getting some bad data entering the function, and as such, GIGO.
-figure out wtf is happening with the correlations n transforms n such plz :))))
-last changes were just printing stuff both on cuda and cpp
+IT WAS A FUCKING NEGATIVE SIGN FUCKKKKKK
+GOD DAMN IT I LOVE/HATE PROGRAMMING
 
-Ok, checklist:
-Correspondences: Passed the same, line calc mostly equal (rounding error on cpu, but its 1e-7 so it shouldn't be too bad).
+anyways right now the issue is that python is straight up too slow. not even joking.
+
+I'll port over the code to C++, primarily the map and particle system. Then, I'll port over the whole SLAM stack and use pybind as a front
+(note: figure out how to use cuda with pybind)
+We have to decide if we should use cv2 Mat or eigen Matrix for our occupancy grid in c++
+
+let's leave a stable version right now for Project R.

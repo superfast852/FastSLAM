@@ -108,7 +108,7 @@ multicast_ray_optimized(0, 0, 1, 1, 1, np.ones((10, 10)), 0.00) # compile the fu
 
 class DifferentialDriveRobot:
     def __init__(self, map_obj, init_pose = None, robot_radius=5, wheel_radius=1.0, wheel_base=2.0,
-                 max_linear_speed=100, max_angular_speed=np.pi / 2,
+                 max_linear_speed=250, max_angular_speed=np.pi/2,
                  noise_std=0.0, lidar_rays=360, raycast=False):
         """
         Initialize a differential drive robot.
@@ -394,9 +394,9 @@ def wall_following(pose, scan):
 
     # If too close to a wall, turn away
     if min_dist < 250:
-        return 20, 5
+        return 50, 5
     else:
-        return 100, 0
+        return 1000, 0
 
 
 # Example usage:
