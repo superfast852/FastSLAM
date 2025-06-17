@@ -7,11 +7,12 @@ from tools import normalize_angle, opencv_to_gif
 translation_std = 1
 rotation_std = 1
 
-sim = RobotSimulation("./lmap2.png")
-slam = SLAM(100, 800, sim.map.map_meters, 0.5, (translation_std, translation_std, rotation_std), thick_register=True)
+sim = RobotSimulation("./lmap2.png", random_rot=False)
+np.random.seed(42)
+slam = SLAM(10, 800, sim.map.map_meters, 0.5, (translation_std, translation_std, rotation_std), thick_register=True)
 prev_pose = None
 frames = []
-np.random.seed(42)
+
 def func(pose, scan):
     global prev_pose
     # TODO: ax.scatter the skeletonized toScan map to see what's going on there
@@ -26,6 +27,7 @@ def func(pose, scan):
         slam.update(np.zeros((3,)), scan)
         return wall_following(og_pose, og_scan)
     diff = pose - prev_pose
+    diff += get_movement_noise(translation_std, translation_std, rotation_std, diff[0], diff[1], diff[2], 1).flatten()
     diff[2] = normalize_angle(diff[2])
     prev_pose = pose
 

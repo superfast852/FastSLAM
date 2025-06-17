@@ -13,3 +13,5 @@ I'll port over the code to C++, primarily the map and particle system. Then, I'l
 We have to decide if we should use cv2 Mat or eigen Matrix for our occupancy grid in c++
 
 let's leave a stable version right now for Project R.
+
+Note: random rot absolutely demolishes everything. That's worrying.

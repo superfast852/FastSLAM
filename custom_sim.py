@@ -108,8 +108,8 @@ multicast_ray_optimized(0, 0, 1, 1, 1, np.ones((10, 10)), 0.00) # compile the fu
 
 class DifferentialDriveRobot:
     def __init__(self, map_obj, init_pose = None, robot_radius=5, wheel_radius=1.0, wheel_base=2.0,
-                 max_linear_speed=250, max_angular_speed=np.pi/2,
-                 noise_std=0.0, lidar_rays=360, raycast=False):
+                 max_linear_speed=200, max_angular_speed=np.pi,
+                 noise_std=0.0, lidar_rays=360, raycast=False, random_rot=True):
         """
         Initialize a differential drive robot.
 
@@ -134,7 +134,7 @@ class DifferentialDriveRobot:
         # Initialize robot state: [x, y, theta]
         # Start in the middle of the map
         center = np.array(self.map.map_center)
-        self.pose = np.array([center[0], center[1], 0]) if init_pose is None else init_pose
+        self.pose = np.array([center[0], center[1], np.random.rand()*2*np.pi if random_rot else 0]) if init_pose is None else init_pose
         print("init pose:", center)
         # Try to find a valid starting position
         while not self.is_valid_position(self.pose[:2]):
@@ -281,7 +281,7 @@ class DifferentialDriveRobot:
 
 
 class RobotSimulation:
-    def __init__(self, map_path="./lmap2.png", robot_radius=5, lidar_rays=360, noise=0.1, raycast=False):
+    def __init__(self, map_path="./lmap2.png", robot_radius=5, lidar_rays=360, noise=0.1, raycast=False, random_rot=True):
         """
         Initialize the robot simulation.
 
@@ -308,7 +308,7 @@ class RobotSimulation:
             self.map.map[200:300, 600:700] = 1
 
         # Initialize the robot
-        self.robot = DifferentialDriveRobot(self.map, robot_radius=robot_radius, lidar_rays=lidar_rays, raycast=raycast, noise_std=noise)
+        self.robot = DifferentialDriveRobot(self.map, robot_radius=robot_radius, lidar_rays=lidar_rays, raycast=raycast, noise_std=noise, random_rot=random_rot)
 
         # Simulation parameters
         self.dt = 1/60
