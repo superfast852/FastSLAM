@@ -123,11 +123,6 @@ def pose_to_transform(pose):
     ])
 
 
-import cv2
-from PIL import Image
-import numpy as np
-
-
 def opencv_to_gif(images, output_path, duration=10):
     """
     Convert OpenCV images to GIF

@@ -1,15 +1,20 @@
+import cv2
 import numpy as np
 from custom_sim import RobotSimulation, wall_following
-from fastslam import SLAM
+from fastslam import SLAM, get_movement_noise
 from tools import normalize_angle, opencv_to_gif
 
-sim = RobotSimulation()
-slam = SLAM(20, 800, sim.map.map_meters, 0.5, (1, 1, 1), thick_register=True)
+translation_std = 1
+rotation_std = 1
+
+sim = RobotSimulation("./lmap2.png")
+slam = SLAM(100, 800, sim.map.map_meters, 0.5, (translation_std, translation_std, rotation_std), thick_register=True)
 prev_pose = None
 frames = []
 np.random.seed(42)
 def func(pose, scan):
     global prev_pose
+    # TODO: ax.scatter the skeletonized toScan map to see what's going on there
     og_pose = pose.copy()
     og_scan = scan.copy()
 
@@ -27,7 +32,9 @@ def func(pose, scan):
     pose_est, map = slam.update(diff, scan)
     frame = slam.animate_alpha(False)
     frames.append(frame)
+    cv2.imshow("FastSLAM", frame)
+    cv2.waitKey(1)
     return wall_following(og_pose, og_scan)
 
-sim.run(func, cartesian=True)
-opencv_to_gif(frames, "demo.gif")
+sim.run(func, max_steps=1000, cartesian=True, show=False)
+opencv_to_gif(frames, "demo_short.gif")

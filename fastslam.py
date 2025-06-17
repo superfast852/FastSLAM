@@ -2,11 +2,25 @@ from time import time
 import cv2
 import numpy as np
 from mapping import Map, batch_update
-from icp import iterative_closest_point as icp, to_world, transform_to_pose
-from tools import normalize_angle
+from icp import icp
+from tools import normalize_angle, to_world
 
 np.set_printoptions(suppress=True, precision=6)
 
+
+def get_movement_noise(sigma_x, sigma_y, sigma_theta, dx, dy, dtheta, n_particles):
+    """
+    Generate movement noise for odometry
+    :param sigma_x:
+    :param sigma_y:
+    :param sigma_theta:
+    :return:
+    """
+    noise_x = np.random.normal(0, sigma_x * dx ** 2 + sigma_theta * dtheta ** 2, n_particles)
+    noise_y = np.random.normal(0, sigma_y * dy ** 2 + sigma_theta * dtheta ** 2, n_particles)
+    noise_theta = np.random.normal(0, sigma_theta * dtheta ** 2 + (sigma_x + sigma_y) * (dx ** 2 + dy ** 2),
+                                   n_particles)
+    return np.array([noise_x, noise_y, noise_theta])
 
 class ParticleSystem:
     """Class to efficiently manage all particles using vectorized operations"""
@@ -136,7 +150,6 @@ class SLAM:
         # 4: Check if resampling is needed
         n_eff = 1.0 / np.sum(self.particles.weights ** 2)
         position_std = np.std(np.linalg.norm(self.particles.poses - np.mean(self.particles.poses, axis=0), axis=1))
-        print(n_eff, position_std)
         if n_eff < self.n_particles * self.resample_threshold or position_std > 0.02:
             self.resample_particles()
 
@@ -153,20 +166,7 @@ class SLAM:
 
         # Extract current orientations
         theta = self.particles.poses[:, 2]
-
-        # Generate motion noise
-        sigma_x, sigma_y, sigma_theta = self.odom_noise
-
-        # Motion noise proportional to motion magnitude
-        '''
-        noise_x = np.random.normal(0, sigma_x * (abs(dx) + abs(dtheta)), n_particles)
-        noise_y = np.random.normal(0, sigma_y * (abs(dy) + abs(dtheta)), n_particles)
-        noise_theta = np.random.normal(0, sigma_theta * abs(dtheta), n_particles)
-        '''
-        noise_x = np.random.normal(0, sigma_x * dx ** 2 + sigma_theta * dtheta ** 2, n_particles)
-        noise_y = np.random.normal(0, sigma_y * dy ** 2 + sigma_theta * dtheta ** 2, n_particles)
-        noise_theta = np.random.normal(0, sigma_theta * dtheta ** 2 + (sigma_x + sigma_y) * (dx ** 2 + dy ** 2), n_particles)
-
+        noise_x, noise_y, noise_theta = get_movement_noise(*self.odom_noise, *odom, n_particles=n_particles)
         # If odometry is in robot frame, transform to world frame
         world_dx = dx * np.cos(theta) - dy * np.sin(theta)
         world_dy = dx * np.sin(theta) + dy * np.cos(theta)
@@ -194,22 +194,16 @@ class SLAM:
         # Get existing map points (if any) in METERS, world frame
         map_points = particle_map.toScan(skel=self.thick, pose=pose, max_radius=self.mld) - self.px2m(
             *particle_map.map_center)  # This should return points in meters, world frame
+
         if map_points.shape[0] > 10:  # Need sufficient map points for ICP
             try:
                 # Use predicted pose as initial guess for ICP
                 initial_guess = pose  # ICP will find the correction
                 global_scan = to_world(initial_guess, scan)
-                pose_correction, icp_error = icp(
-                    global_scan,
-                    map_points,
-                    max_iterations=20,
-                    tol=1e-7,
-                    return_score=True,
-                )
-                pose_correction = transform_to_pose(pose_correction)
-                pose_correction[2] = normalize_angle(pose_correction[2])
+                pose_correction, icp_error, _ = icp(global_scan, map_points)
 
                 # Update particle pose
+                pose_correction[2] = normalize_angle(pose_correction[2])
                 self.particles.poses[particle_idx] += pose_correction
 
                 # Calculate particle weight based on ICP fit quality
@@ -326,7 +320,7 @@ if __name__ == "__main__":
 
     sim = Stream("./data.pkl")
     slam = SLAM(100, 800, 10, thick_register=True)
-    while True:
+    for _ in range(3):
         for i in range(25):
             scan, pose, odom = sim()
             if sim.i >= sim.max:
@@ -336,7 +330,7 @@ if __name__ == "__main__":
         start = time()
         slam_pose, map = slam.update(odom[0], scan)
         print("Execution time:", 1/(time() - start))
-        slam.animate_alpha()
+        # slam.animate_alpha()
 
         error = np.linalg.norm(pose[:2] - slam_pose[:2])
         print(f"Position error: {error:.3f}m\n")

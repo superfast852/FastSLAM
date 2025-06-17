@@ -1,3 +1,12 @@
 Add initial guesses for ICP. And properly implement Point-to-Line ICP.
 Add some way to know how sh*t a map is. Maybe find "fragmentation" in walls? discontinuities?
 Test with noise
+
+THE CUDA ISSUE IS WITH THE SYSTEM SOLUTION.
+soooo actually ::::
+the problem seems to be rooted much higher. We're getting some bad data entering the function, and as such, GIGO.
+figure out wtf is happening with the correlations n transforms n such plz :))))
+last changes were just printing stuff both on cuda and cpp
+
+Ok, checklist:
+Correspondences: Passed the same, line calc mostly equal (rounding error on cpu, but its 1e-7 so it shouldn't be too bad).

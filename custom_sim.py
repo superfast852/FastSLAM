@@ -6,7 +6,7 @@ from mapping import OldMap
 
 @jit(nopython=True, parallel=True, fastmath=True)
 def multicast_ray_optimized(rx, ry, theta: float = 0.00, n_rays=360, max_distance=500,
-                                   map_array=np.ones((10, 10)), noise_sigma=0.00):
+                                   map_array=np.ones((10, 10)), noise_sigma=0.00, collision_bound=0.8):
     location = np.array([rx, ry], dtype=np.float32)
 
     # Generate rays in strictly descending order (2π to 0)
@@ -18,13 +18,9 @@ def multicast_ray_optimized(rx, ry, theta: float = 0.00, n_rays=360, max_distanc
         noise = np.random.normal(0, noise_sigma, n_rays)
         # Ensure noise doesn't cause angles to cross each other
         max_noise = np.diff(base_rays)[0] * 0.49  # Use 49% of the gap between angles
-        noise = np.clip(noise, -max_noise, max_noise)
-        rays = base_rays + noise
+        rays = base_rays + np.clip(noise, -max_noise, max_noise)
     else:
         rays = base_rays
-
-    # Pre-calculate rays and their angles with theta shift
-    rays_minus_theta = rays - theta
 
     # Pre-allocate the output array
     scan = np.zeros((n_rays, 2), dtype=np.float32)
@@ -52,8 +48,7 @@ def multicast_ray_optimized(rx, ry, theta: float = 0.00, n_rays=360, max_distanc
 
             # Check for collision
             if (x_int == 0 or y_int == 0 or x_int == max_x or y_int == max_y or
-                    map_array[y_int, x_int] == 1):
-
+                    map_array[y_int, x_int] >= collision_bound):
                 # Calculate distance directly
                 distance = np.sqrt((x - location[0]) ** 2 + (y - location[1]) ** 2)
 
@@ -67,7 +62,7 @@ def multicast_ray_optimized(rx, ry, theta: float = 0.00, n_rays=360, max_distanc
                 elif ray_angle >= 2 * np.pi:
                     ray_angle -= 2 * np.pi
 
-                scan[i, 0] = distance
+                scan[i, 0] = distance  + np.random.normal(0, noise_sigma)
                 scan[i, 1] = ray_angle
                 break
 
@@ -113,7 +108,7 @@ multicast_ray_optimized(0, 0, 1, 1, 1, np.ones((10, 10)), 0.00) # compile the fu
 
 class DifferentialDriveRobot:
     def __init__(self, map_obj, init_pose = None, robot_radius=5, wheel_radius=1.0, wheel_base=2.0,
-                 max_linear_speed=50, max_angular_speed=np.pi / 2,
+                 max_linear_speed=100, max_angular_speed=np.pi / 2,
                  noise_std=0.0, lidar_rays=360, raycast=False):
         """
         Initialize a differential drive robot.
@@ -286,7 +281,7 @@ class DifferentialDriveRobot:
 
 
 class RobotSimulation:
-    def __init__(self, map_path="./lmap2.png", robot_radius=5, lidar_rays=360, raycast=False):
+    def __init__(self, map_path="./lmap2.png", robot_radius=5, lidar_rays=360, noise=0.1, raycast=False):
         """
         Initialize the robot simulation.
 
@@ -307,12 +302,13 @@ class RobotSimulation:
             # Create a simple map if loading fails
             self.map = OldMap(800, 10)
             # Add some obstacles
+            self.map.map *= 0
             self.map.map[200:300, 200:300] = 1
             self.map.map[400:500, 400:500] = 1
             self.map.map[200:300, 600:700] = 1
 
         # Initialize the robot
-        self.robot = DifferentialDriveRobot(self.map, robot_radius=robot_radius, lidar_rays=lidar_rays, raycast=raycast)
+        self.robot = DifferentialDriveRobot(self.map, robot_radius=robot_radius, lidar_rays=lidar_rays, raycast=raycast, noise_std=noise)
 
         # Simulation parameters
         self.dt = 1/60
@@ -343,7 +339,7 @@ class RobotSimulation:
         """
         return self.robot.visualize()
 
-    def run(self, control_function=None, max_steps=1000, cartesian=False):
+    def run(self, control_function=None, max_steps=1000, cartesian=False, show=True):
         """
         Run the simulation with a control function.
 
@@ -373,11 +369,12 @@ class RobotSimulation:
 
             linear_vel, angular_vel = control_function(pose, scan)
             self.step(linear_vel, angular_vel)
-            self.render()
+            if show:
+                self.render()
 
-            key = cv2.waitKey(int(self.dt * 1000)) & 0xFF
-            if key == 27:  # ESC key
-                self.running = False
+                key = cv2.waitKey(int(self.dt * 1000)) & 0xFF
+                if key == 27:  # ESC key
+                    self.running = False
 
         cv2.destroyAllWindows()
         return np.array(trajectory)
@@ -399,7 +396,7 @@ def wall_following(pose, scan):
     if min_dist < 250:
         return 20, 5
     else:
-        return 200, 0
+        return 100, 0
 
 
 # Example usage:

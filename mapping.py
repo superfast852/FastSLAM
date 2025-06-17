@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from numba import njit, prange
 from skimage.morphology import skeletonize
-from _mapping_cu import update_map
+from cu_modules import update_map
 
 pymap = lambda n, func: map(func, n)
 
@@ -15,38 +15,60 @@ class Map:
     # Occupied: 1
     # Unknown: 0.5
     # fixed
-    def __init__(self, map=800, map_meters=35):
-        # The IR Map is just the RRT Map format.
-        self.map_meters = None
+    def __init__(self, map=800, map_meters=35, confidence_thres=0.9):
+        self.map_meters = map_meters
+        self.thres = confidence_thres
 
         if isinstance(map, int):
             # generate a blank IR Map
-            self.map = np.ones((map, map), dtype=int)*0.5
+            self.map = np.ones((map, map), dtype=np.float32)*0.5
+        elif isinstance(map, np.ndarray) and map.ndim == 2:
+            self.map = map.copy().astype(np.float32)
+            if self.map.max() > 1:
+                self.map /= 255.0
+            if self.map.min() < 0:
+                self.map[self.map < 0] = 0.5
+            if self.map.shape[0] != self.map.shape[1]:
+                map = self.map.copy()
+                max_dim = max(map.shape)
+
+                # Calculate padding for each dimension
+                pad_height = max_dim - map.shape[0]
+                pad_width = max_dim - map.shape[1]
+
+                # Distribute padding evenly, with extra padding going to the end
+                pad_top = pad_height // 2
+                pad_bottom = pad_height - pad_top
+
+                pad_left = pad_width // 2
+                pad_right = pad_width - pad_left
+
+                # Apply padding: ((top, bottom), (left, right))
+                self.map = np.pad(map, ((pad_top, pad_bottom), (pad_left, pad_right)),
+                                 mode="constant", constant_values=0.5)
         else:
             print("[NavStack/Map] Map format unidentified.")
             raise ValueError("Map format unidentified.")
 
         self.map_center = (self.map.shape[0]//2, )*2  # These are all square maps, so no need to worry.
-
-        if self.map_meters is None:
-            self.map_meters = map_meters
         self.m2px = self.map.shape[0] / self.map_meters
         self.px2m = 1 / self.m2px
 
     # added
-    def toScan(self, thres=0.9, meters=True, skel=False, pose=None, max_radius=None):
-        bin_map = (self.map > thres).astype(bool)
+    def toScan(self, meters=True, skel=False, pose=None, max_radius=None):
+        bin_map = (self.map > self.thres).astype(int)
         if skel:
-            bin_map = skeletonize(bin_map).astype(int)
-        map_points = np.argwhere(bin_map)[:, ::-1]  * (self.px2m if meters else 1)  # [x, y] in pixels
+            bin_map = skeletonize(bin_map)
+        map_points = np.argwhere(bin_map.astype(bool))[:, ::-1]  * (self.px2m if meters else 1)  # [x, y] in pixels
 
-
-        if pose is not None and max_radius is not None:
+        if pose is not None and max_radius is not None and max_radius != np.inf:
+            print("Radius activated!")
             dxdy = map_points - pose[:2] - self.map_center
             dists = np.linalg.norm(dxdy, axis=1)
             map_points = map_points[dists <= max_radius]
 
         return map_points
+
     def save(self, name=None):
         if name is None:
             from datetime import datetime
@@ -58,14 +80,14 @@ class Map:
         print(f"[NavStack/Map] Saved Map as {name}!")
 
     def isValidPoint(self, point, unknown=False):
-        return self.map[point[1], point[0]] == 0 if not unknown else self.map[point[1], point[0]] != 1
+        return self.map[point[1], point[0]] == 0 if not unknown else self.map[point[1], point[0]] < self.thres
 
     def getValidPoint(self, unknown=False) -> tuple:
-        free = np.argwhere(self.map == 0) if not unknown else np.argwhere(self.map != 1)
+        free = np.argwhere(self.map == 0) if not unknown else np.argwhere(self.map < self.thres)
         return tuple(free[np.random.randint(0, free.shape[0])])  # flip to get as xy
 
     def copy(self):
-        new_map = Map(self.map.shape[0], self.map_meters)
+        new_map = Map(self.map.shape[0], self.map_meters, self.thres)
         new_map.map = self.map.copy()
         return new_map
 
@@ -155,17 +177,17 @@ class Map:
         return self.map.copy().round().astype(int)
 
     def collision_free(self, a, b) -> bool:
-        return self.cf_wrap(self.map, (a[0], a[1]), (b[0], b[1]))
+        return self.cf_wrap(self.map, (a[0], a[1]), (b[0], b[1]), self.thres)
 
-    def expand(self, size):  # TODO: work on how expansion should work (scaling, optimal size. etc.)
-        self.map = np.pad(self.map, size, "constant", constant_values=0.5)
+    def expand(self, size, val=0.5):  # TODO: work on how expansion should work (scaling, optimal size. etc.)
+        self.map = np.pad(self.map, size, "constant", constant_values=val)
         self.map_center = (self.map.shape[0] // 2,) * 2  # These are all square maps, so no need to worry.
         self.m2px = self.map.shape[0] / self.map_meters
         self.px2m = 1 / self.m2px
 
     @staticmethod
     @njit
-    def cf_wrap(map, a, b) -> bool:
+    def cf_wrap(map, a, b, thres) -> bool:
         x1, y1, x2, y2 = int(a[0]), int(a[1]), int(b[0]), int(b[1])
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         issteep = abs(y2 - y1) > abs(x2 - x1)
@@ -190,7 +212,7 @@ class Map:
                 point = (x, y)
             if (point[0] < 0 or point[1] < 0) or (point[0] >= map.shape[0] or point[1] >= map.shape[1]):
                 return False
-            if map[point[1], point[0]] == 1:  # there is an obstacle
+            if map[point[1], point[0]] >= thres:  # there is an obstacle
                 return False
             error -= deltay
             if error < 0:
@@ -474,7 +496,7 @@ def batch_update(scan: np.ndarray, maps: List[Map], poses: np.ndarray[:, 3], thi
         :param thick: Enable this to add a border to the obstacle points.
         :return: None. The maps are updated inplace.
         """
-    map_arrs = np.array([map.map for map in maps])
+    map_arrs = np.array([map.map for map in maps])  # TODO: this line takes a lot of time! Maybe preallocate memory?
     new_maps = update_map(scan, map_arrs, poses, thick)
     for i, map_obj in enumerate(maps):
-        map_obj._frombatch(new_maps[i])
+        map_obj.map = new_maps[i]

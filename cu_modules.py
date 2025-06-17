@@ -3,7 +3,7 @@ import numpy as np
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 
-mod = SourceModule("""
+map_module = SourceModule(r"""
 __device__ void swap(int& a, int& b) noexcept {
     int temp = a;
     a = b;
@@ -170,7 +170,7 @@ def update_map(scan: np.ndarray, maps: np.ndarray, poses: np.ndarray, thick=Fals
     cuda.memcpy_htod(d_scan, scan)
     cuda.memcpy_htod(d_maps, maps)
     cuda.memcpy_htod(d_poses, poses)
-    func = mod.get_function("update_map")
+    func = map_module.get_function("update_map")
     func(
         d_scan, d_maps, d_poses, np.int32(map_size), np.int32(thick), block=(points, 1, 1), grid=(n_particles, 1)
     )
@@ -180,7 +180,6 @@ def update_map(scan: np.ndarray, maps: np.ndarray, poses: np.ndarray, thick=Fals
 
 
 update_map(np.zeros((3,2)), np.zeros((2, 2)), np.zeros((3,)))
-
 
 if __name__ == "__main__":
     n_particles = 100
